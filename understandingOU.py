@@ -19,7 +19,7 @@ chipletSpecs = {
     "Standard":    {"base": (128, 128), "rowKnob": 87.5, "colKnob": 12.5, "tops": 30.0, "energy_per_mac": 0.87e-12},
     "Shared":      {"base": (764, 764), "rowKnob": 68.0, "colKnob": 1.3,  "tops": 27.0, "energy_per_mac": 0.30e-12},
     "Adder":       {"base": (64,  64),  "rowKnob": 81.0, "colKnob": 0.4,  "tops": 11.0, "energy_per_mac": 0.18e-12},
-    "Accumulator": {"base": (256, 256),"rowKnob": 55.0, "colKnob": 51.0, "tops": 35.0, "energy_per_mac": 0.22e-12},
+    "Accumulator": {"base": (256, 256),"rowKnob": 50.5, "colKnob": 49.5, "tops": 35.0, "energy_per_mac": 0.22e-12},
     "ADC_Less":    {"base": (128, 128),"rowKnob": 64.4, "colKnob": 20.0, "tops": 3.8,  "energy_per_mac": 0.27e-12},
 }
 # Tops should be multiplied by 10e12 
@@ -45,11 +45,11 @@ def customizeOU(row: int, col: int, chipletName: str):
     EnergyCol = epm *  colKnobPercent * (col / baseCol)
 
     # Energy per mac is Energy Total
-    EnergyTotal = EnergyRow + EnergyCol 
+    EnergyTotal = EnergyRow + EnergyCol # J / operation
     tops = chipletSpecs[chipletName]["tops"] * (row / baseRow) * (col / baseCol) # Adjust TOPS
 
-    powerDensity = EnergyTotal * tops * 1e12  # Convert to pJ (picojoules)
-    # Not focusing on tops for now, it is not scaled by 10e12 also. 
+    powerDensity = EnergyTotal * tops * 1e12  # Scaled by 1e12 
+    # Power (Watts) = J/operation * Operation/second = J/s (W)
     return EnergyTotal, tops, powerDensity
     
 
@@ -112,6 +112,7 @@ def select_lowest_row_config(factor_list, min_R):
 
     # Select lowest row, then lowest column among valid
     return min(valid_factors, key=lambda x: (x[0], x[1]))
+
 
 ## Pareto-based rank seletion function selects the config with the lowest EDP
 def rank_based_selection(configs):
@@ -187,9 +188,11 @@ def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV
             activationSparsity = row["Activation_Sparsity(0-1)"]
             activationsKB = row["Activations(KB)"]
 
+            non_zero_bits = math.ceil((weightsKB * (1 - weightSparsity)) * 1024 * 8)
             # ** For Selecting the optimal OU and its other characteristics ** #
             # Metrics for each layer, crossbars required, min reequired crossbars(in square form), Macs per crossbar, activations per crossbar
-            crossbarsReq = math.ceil(weightsKB * 1024 * 8 / (chipletTypesDict[chipletName]["Size"] * chipletTypesDict[chipletName]["Bits/cell"]))
+            crossbarsReq = math.ceil(non_zero_bits / (chipletTypesDict[chipletName]["Size"] * chipletTypesDict[chipletName]["Bits/cell"]))
+            
             # Gets minimum required Crossbar, Macs per cross bar and activations per crossbar // old metrics used
             minRequiredCrossbars = math.ceil(math.sqrt(chipletTypesDict[chipletName]["Size"]* (1 - weightSparsity)))
             MACSperCrossbar = math.ceil(total_macs / crossbarsReq)
@@ -210,6 +213,15 @@ def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV
             # Get col required based on row required and the number of MACS ## this is for finding the Minimum Crossbar Dimesnions
             colReq = math.ceil(adjustedOUDimensionReq / rowReq)
 
+
+            # TO DO: LIMIT OU DIMENSIONS TO 64 X 64
+            # To do idealCrossbarDim = (min(idealCrossbarDim[0], 64), min(idealCrossbarDim[1], 64)) ?
+            if chipletName == "Accumulator":
+                idealCrossbarDim = (min(idealCrossbarDim[0], 32), min(idealCrossbarDim[1], 32))
+
+            if chipletName == "Shared":
+                idealCrossbarDim = (idealCrossbarDim[0] * 2 , idealCrossbarDim[1] * 2)
+            
             step = 4
             colLimit = idealCrossbarDim[1] # set colum limit to the required dimension
             if chipletName == "Standard":
@@ -219,12 +231,11 @@ def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV
             
             max_col_limit = min(colLimit, idealCrossbarDim[1]) # choose the lowest value as limit for column search space
             
-            if chipletName == "Shared":
-                idealCrossbarDim = (idealCrossbarDim[0] * 2 , idealCrossbarDim[1] * 2)
+            
             
             possibleOUConfigs = []
 
-            ###### TEMPORARY FOR MANUAL CHANGE OF OU ROW AND COL TO COMPARE ON WORKLAODS ######
+            ######  MANUAL CHANGE OF OU ROW AND COL TO COMPARE ON WORKLAODS ######
             if manualOU is True:
                 ou_row = manual_ou_row
                 ou_col = manual_ou_col
@@ -378,6 +389,7 @@ def computeCrossbarMetrics(chip_distribution, chipletName: str, workloadStatsCSV
                 "layer": layer,
                 "Weights(KB)": weightsKB,
                 "Weight_Sparsity": weightSparsity,
+                "Non-Zero Bits": non_zero_bits,
                 "crossbars_required": crossbarsReq ,
                 "Activations (KB)": activationsKB,
                 "Adjusted Activations (KB)": adjustedActivationsKB,
@@ -454,7 +466,7 @@ def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str = None, 
         ou_sizes = [r * c for r, c in zip(ou_rows, ou_cols)]
 
         # Plot single OU-size line
-        line2, = ax2.plot(layers, ou_sizes, marker="o", linewidth=2, label=f"OU ({chipletName})")
+        line2, = ax2.plot(layers, ou_sizes, marker="o", color="orange", linewidth=2, label=f"OU ({chipletName})")
         legend_handles += [line2]
         legend_labels  += [f"OU ({chipletName})"]
 
@@ -463,10 +475,11 @@ def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str = None, 
         
         # Draw rotated OU configs below each tick
         for x, r, c in zip(layers, ou_rows, ou_cols):
-            ax1.text(x, -0.06, f"{r}x{c}", fontsize=6, rotation=90, ha='center', va='top', transform=ax1.get_xaxis_transform())
+            ax1.text(x, -0.06, f"{r}x{c}", fontsize=8, rotation=90, ha='center', va='top', transform=ax1.get_xaxis_transform())
 
         title = (f"Sparsity vs. OU Size per Layer for {workload_name} on {chipletName} Chiplet")
         plt.title(title)
+        ax1.legend(legend_handles, legend_labels, loc="upper right")
 
         save_path = os.path.join(save_folder, f"{workload_name}_{chipletName}.png")
         # Export single-chiplet table (3 columns; no numeric OU size) to csv for viewing in table
@@ -508,6 +521,9 @@ def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str = None, 
         title = f"Sparsity vs. OU Size per Layer for {workload_name} (Multiple Chiplets)"
         plt.title(title)
 
+        # Legend at bottom middle for multi chiplets
+        ax1.legend(legend_handles, legend_labels, loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=len(legend_labels), fontsize = 12)
+
         # Save with MULTI suffix
         save_path = os.path.join(save_folder, f"{workload_name}_MULTI.png")
 
@@ -537,7 +553,6 @@ def plotLayerSparsityWithBestOU(workloadStatsCSV: str, chipletName: str = None, 
             print(f"Combined layer data saved to: {csv_path}")
 
     # Legend & save
-    ax1.legend(legend_handles, legend_labels, loc="upper center", bbox_to_anchor=(0.5, -0.10), ncol=len(legend_labels), fontsize = 12)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     print(f"Figure saved to: {save_path}")
@@ -603,11 +618,14 @@ def print_layer_table_for_workload_computation(res, layers, chiplet_name):
             c = int(best_cfg['ou_col'])
             latency = best_cfg['latency']
             energy = best_cfg['energy']
+            power_density = best_cfg['power_density']
             edp = latency * energy
 
         Xbars_used = 0
+        chips_used = 0
         # Add all chip_ids used in this layer to the set and get Xbars used from allocations in that layer
         for alloc in lr["allocations"]:
+            chips_used += 1
             seen_chiplets.add(alloc["chip_id"])
             Xbars_used += alloc["Crossbars_used"]
             weight_sparsity = alloc["weight sparsity"]
@@ -632,9 +650,11 @@ def print_layer_table_for_workload_computation(res, layers, chiplet_name):
             Creq,
             r,
             c,
+            power_density,
             layer_activations,
             layer_activations_adjusted,
-            chiplet_count
+            chiplet_count,
+            chips_used
         ])
 
     # Fix column list (comma between Energy and EDP)
@@ -653,9 +673,11 @@ def print_layer_table_for_workload_computation(res, layers, chiplet_name):
             "C Required",
             "r",
             "c",
+            "Power Density",
             "Original Layer Activations (KB)",
             "Activations adjusted by Creq (KB)",
-            "Chiplet #"
+            "Chiplet #",
+            "Chips Used"
         ]
     )
 
@@ -675,6 +697,7 @@ def print_layer_OU_info(res):
         print(f"Adjusted Activations (KB): {r['Adjusted Activations (KB)']}")
         print(f"Weights (KB): {r['Weights(KB)']}")
         print(f"Weight Sparsity: {r['Weight_Sparsity']}")
+        print(f"Non-Zero Bits: {r['Non-Zero Bits']}")
         print(f"Minimum Row Requirement: {r['Minimum_row_Req']}")
         print(f"Crossbars Required: {r['crossbars_required']}")
         print(f"Minimum OU Dimension Required: {r['Minimum OU Dimension Required']}")
@@ -708,34 +731,51 @@ def run_workloads_across_chiplets_WS_vs_OU( workloads, chiplets, chip_count=1000
 
             plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, res_list=res_list, save_folder=save_folder)
 
+def sweep_workloads_for_each_chiplet_WS_vs_OU( workloads, chiplets, chip_count = 1000, save_folder="workload layers WS vs OU"):
+    for workload_csv in workloads:
+        print(f"WORKLOAD --- {workload_csv}")
+        for i, chip in enumerate(chiplets):
+            print(f"CHIP --- {chip}")
+            chipDist = [0] * len(chiplets)
+            chipDist[i] = chip_count
+
+            res, layers = computeCrossbarMetrics(chipDist, chipletName=chip, workloadStatsCSV=workload_csv)
+            plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, chipletName=chip, configs=res)
+
+
+#def plotLayersWithBestEDPandOU(workload, chiplets):
+
 
 if __name__ == "__main__":
     # --- For iterating over all combinations use these
     workloads = ["workloads/resnet18_stats.csv", "workloads/resnet18_stats_pruned.csv", "workloads/vgg16_stats.csv",
                  "workloads/vgg16_stats_pruned.csv", "workloads/vgg11_stats.csv", "workloads/vgg11_stats_pruned.csv"]
-    chiplets = ["Standard", "Shared", "Adder"] # Accumulator as well, but not used in this script as it stretches WS vs OU graph
+    chiplets = ["Standard", "Shared", "Adder", "Accumulator"] # Accumulator as well, but not used in this script as it stretches WS vs OU graph
 
     # --- For working with one chiplet and one workload at a time use these
-    workload_csv = "workloads/vgg11_stats_pruned.csv"
-    chiplet = "Standard"
-    chipDist = [110, 0, 0, 0, 0]
+    workload_csv = "workloads/resnet18_stats_pruned.csv"
+    chiplet = "Accumulator"  # Choose from "Standard", "Shared", "Adder", "Accumulator"
+    chipDist = [0, 0, 0, 100, 0]
     chipCount = 10000
 
     # -- FOR SINGULAR WORKLOAD AND CHIPLET USE ONLY -- #
     res, layers = computeCrossbarMetrics(chipDist, chipletName=chiplet, workloadStatsCSV=workload_csv)
     # -- FOR MANUAL OU SELECTION USE
-    # res, layers = computeCrossbarMetrics(chipDist, chipletName=chiplet, workloadStatsCSV=workload_csv, manualOU=True, manual_ou_col= 16, manual_ou_row=16)
+    #res, layers = computeCrossbarMetrics(chipDist, chipletName=chiplet, workloadStatsCSV=workload_csv, manualOU=True, manual_ou_row=32, manual_ou_col= 32)
     print_layer_table_for_workload_computation(res, layers, chiplet)
     # -- Optional print statement to show layer characteristics regarding OU -- #
-    # print_layer_OU_info(res)
+    print_layer_OU_info(res)
     # -- Optional print statement to show the chiplet allocations and OLD energy/latency metrics from mapperV3.py -- #
-    # print_layer_compute_metrics(layers)
+    print_layer_compute_metrics(layers)
 
     # --- To plot list of chiplets OU across list of workloads, saves in workload layers WS vs OU folder --- #
     # --- plots images and writes csv files to 'workload layers WS vs OU' folder
     # run_workloads_across_chiplets_WS_vs_OU(workloads, chiplets, chipCount)
     ## --- To Run only one chiplet and get individual image run the below function
     # plotLayerSparsityWithBestOU(workloadStatsCSV=workload_csv, chipletName=chiplet, configs=res)
+
+    ## --- Sweep all workloads and plot each chip INDIVIDUALLY, rather than comparitvely --- ##
+    sweep_workloads_for_each_chiplet_WS_vs_OU(workloads, chiplets, chipCount)
 
     
 
